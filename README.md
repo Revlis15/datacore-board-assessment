@@ -91,11 +91,7 @@ Dependencies include:
 
 # Configuration
 
-All runtime parameters are stored in:
-
-```
-config.yaml
-```
+Runtime parameters are externalized in `config.yaml` to avoid hardcoded values and ensure the pipeline can be easily configured.
 
 Example configuration:
 
@@ -106,14 +102,23 @@ paths:
 
 tickers:
   file: data/tickers.csv
+  max_tickers: 50
 
 scraping:
-  request_delay_seconds: 5
-  timeout_seconds: 20
-  max_retries: 3
+  cafef:
+    request_delay_seconds: 1.5
+    retry_delay_seconds: 5
+    timeout_seconds: 20
+    max_retries: 3
+
+  vietstock:
+    request_delay_seconds: 2
+    retry_delay_seconds: 5
+    timeout_seconds: 30
+    max_retries: 5
 ```
 
-This design ensures the pipeline is **config-driven** and avoids hardcoded paths.
+Scraping parameters are defined separately for each source because CafeF and Vietstock require different request strategies and retry policies.
 
 # How to Run
 
