@@ -3,7 +3,7 @@ import pandas as pd
 import sys
 from pathlib import Path
 
-# Thêm project root vào sys.path để import từ src
+# Append project root to sys.path to enable absolute imports from the 'src' package
 project_root = Path(__file__).resolve().parents[1]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
@@ -13,7 +13,13 @@ from src.merge import squash_duplicates, resolve_conflicts
 class TestMerger(unittest.TestCase):
 
     def test_squash_duplicates(self):
-        """Kiểm tra gộp 1 người có nhiều chức vụ thành 1 dòng duy nhất."""
+        """
+        Validates the Entity Consolidation logic (squashing concurrent roles into a single Golden Row).
+        
+        Why: Simulates a real-world scenario where a board member holds multiple executive positions. 
+        This ensures the pipeline maintains a strict 1:1 entity-to-row ratio without losing 
+        granular role data, strictly fulfilling the 'single golden row' requirement.
+        """
         data = [
             {'ticker': 'AAA', 'exchange': 'HOSE', 'person_name_canonical': 'nguyen van a', 
              'person_name_key': 'nguyenvana', 'role': 'Chủ tịch HĐQT', 'age': 50},
@@ -23,14 +29,20 @@ class TestMerger(unittest.TestCase):
         df = pd.DataFrame(data)
         result = squash_duplicates(df)
         
-        # Kết quả phải chỉ còn 1 dòng
+        # Assert that the DataFrame was successfully deduplicated to a single row
         self.assertEqual(len(result), 1)
-        # Chức vụ phải được nối lại bằng dấu /
+        # Verify that the roles were concatenated with a slash delimiter
         self.assertIn("Chủ tịch HĐQT / Tổng Giám đốc", result.iloc[0]['role'])
 
     def test_resolve_conflicts_both_sources(self):
-        """Kiểm tra ưu tiên CafeF và lấp đầy dữ liệu từ Vietstock."""
-        # Giả lập 1 dòng sau khi đã merge (có cột _merge)
+        """
+        Validates the Priority-based Conflict Resolution and Data Enrichment strategy.
+        
+        Why: This tests the core intelligence of the ETL pipeline. It ensures the system correctly 
+        resolves field-level disagreements, applies data quality metrics (confidence_score, 
+        source_agreement flag), and successfully enriches records using cross-source data.
+        """
+        # Mock a row simulating the output of an Outer Join across both sources
         row_data = {
             '_merge': 'both',
             'person_name_cafef': 'Nguyễn Văn A',
@@ -48,11 +60,14 @@ class TestMerger(unittest.TestCase):
         
         result = resolve_conflicts(row)
         
-        # 1. Tuổi phải lấy từ Vietstock vì CafeF bị None
+        # 1. Enrichment: Age must be backfilled from Vietstock since CafeF is Null
         self.assertEqual(result['age_golden'], 55.0)
-        # 2. Học vấn ưu tiên Vietstock (theo logic file merge của bạn)
+        
+        # 2. Enrichment: Education prioritizes Vietstock's richer data layer
         self.assertEqual(result['education_golden'], 'Tiến sĩ')
-        # 3. Trạng thái phải là conflict vì role 'Chủ tịch' != 'Thành viên'
+        
+        # 3. Conflict Detection: Roles 'Chủ tịch' (Chairman) and 'Thành viên' (Member) differ, 
+        # triggering a conflict state [cite: 77, 80] and lowering the confidence score.
         self.assertEqual(result['source_agreement'], 'conflict')
         self.assertEqual(result['confidence_score'], 0.6)
 

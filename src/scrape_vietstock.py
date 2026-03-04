@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 import pandas as pd
 import requests
 
-# Đảm bảo script tìm thấy module src
+# Ensure the script can locate the 'src' module when run from the root directory
 project_root = Path(__file__).resolve().parents[1]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
@@ -26,8 +26,16 @@ from src.utils import (
 logger = logging.getLogger(__name__)
 
 def fetch_vietstock_html(ticker: str) -> str:
-    """Tải dữ liệu với Header giả lập trình duyệt và Session."""
+    """
+    Fetches raw HTML from Vietstock using session management and header spoofing.
+    
+    Why this approach?
+    Vietstock employs CSRF tokens and tracks sessions. Using requests.Session() 
+    helps maintain TCP connection pooling and persists necessary cookies across retries.
+    """
     url = f"https://finance.vietstock.vn/{ticker}/ban-lanh-dao.htm"
+    
+    # Standard browser headers to avoid basic bot detection
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -40,21 +48,30 @@ def fetch_vietstock_html(ticker: str) -> str:
         try:
             resp = session.get(url, headers=headers, timeout=30)
             if resp.status_code == 200:
-                # Nếu trang trả về quá ngắn, có thể đã bị chặn hoặc lỗi
+                # Soft Block Detection: Vietstock might return a 200 OK status 
+                # but with an empty or drastically stripped HTML body if rate limits are hit.
                 if len(resp.text) < 1000:
-                    logger.warning(f"Vietstock returned suspiciously short content for {ticker}")
-                    time.sleep(5)
+                    logger.warning(f"Vietstock returned suspiciously short content for {ticker}. Possible soft block.")
+                    time.sleep(5) # Extended backoff
                     continue
                 return resp.text
         except Exception as e:
             logger.error(f"Error fetching {ticker}: {e}")
-        time.sleep(3)
+            
+        time.sleep(3) # Standard retry delay
     return ""
 
 def parse_board_html(html_text: str, ticker: str) -> List[Dict[str, Any]]:
-    """Phân tách dữ liệu thủ công từ HTML lỗi của Vietstock."""
+    """
+    Extracts tabular data using targeted string manipulation and regex.
+    
+    Why manual parsing instead of BeautifulSoup?
+    Financial sites often contain malformed or deeply nested HTML tables that can 
+    cause DOM parsers to fail. Direct string targeting provides rigid control over extraction.
+    """
     if not html_text: return []
     
+    # Isolate the main table container
     table_start = html_text.find('<div class="table-container')
     if table_start == -1: return []
     table_end = html_text.find('</table>', table_start)
@@ -62,7 +79,7 @@ def parse_board_html(html_text: str, ticker: str) -> List[Dict[str, Any]]:
     
     records = []
     current_report_date = None 
-    rows = table_html.split('<tr')[1:]
+    rows = table_html.split('<tr')[1:] # Skip the first split artifact
     
     for row in rows:
         cols = row.split('<td')
@@ -72,21 +89,22 @@ def parse_board_html(html_text: str, ticker: str) -> List[Dict[str, Any]]:
         for col in cols[1:]: 
             idx = col.find('>')
             content = col[idx+1:] if idx != -1 else col
-            content = re.sub(r'<[^>]+>', '', content)
+            content = re.sub(r'<[^>]+>', '', content) # Strip all HTML tags
             content = html_lib.unescape(content).strip()
             clean_cols.append(content)
             
         if not clean_cols: continue
             
-        # Xử lý mốc thời gian (rowspan)
+        # Handle rowspan logic where the first column (date) spans multiple rows
         if re.search(r'\d{2}/\d{2}/\d{4}', clean_cols[0]):
             current_report_date = clean_cols[0]
-            offset = 1
+            offset = 1 # Shift index to accommodate the date column
         else:
-            offset = 0
+            offset = 0 # No date column in this row
         
         try:
             raw_name = clean_cols[offset] if len(clean_cols) > offset else ""
+            # Skip invalid, empty, or placeholder rows right at the parsing stage
             if not raw_name or raw_name == "*** ***" or "Họ và tên" in raw_name:
                 continue
                 
@@ -106,17 +124,27 @@ def parse_board_html(html_text: str, ticker: str) -> List[Dict[str, Any]]:
     return records
 
 def clean_placeholder(value: str) -> str | None:
-    """Chuyển đổi các ký tự placeholder của Vietstock (***, -, v.v.) về None."""
+    """
+    Sanitizes undisclosed or restricted data represented by placeholders.
+    
+    Why is this critical?
+    Vietstock hides data using '***' or '-'. If left uncleaned, these strings will 
+    force downstream Pandas numeric columns (like 'shares' or 'age') into 'object' 
+    types, violating the Parquet schema requirements.
+    """
     if not value:
         return None
     v = value.strip()
-    # Danh sách các ký tự 'rác' Vietstock thường dùng
+    # List of known garbage strings used by Vietstock
     placeholders = ["***", "-", "*** ***", "N/A", "Chưa cập nhật"]
     if v in placeholders or not v:
         return None
     return v
 
 def normalize_records(records: List[Dict[str, Any]], exchange: str) -> pd.DataFrame:
+    """
+    Applies Entity Resolution, calculates metrics, and enforces strict data types.
+    """
     if not records: return pd.DataFrame()
     
     ts = dt.datetime.now(dt.timezone.utc)
@@ -124,22 +152,24 @@ def normalize_records(records: List[Dict[str, Any]], exchange: str) -> pd.DataFr
     rows = []
 
     for r in records:
-        # Làm sạch tên - nếu tên là *** thì bỏ qua luôn bản ghi này
+        # Validate primary entity; drop record if identity is completely masked
         raw_name = clean_placeholder(r["person_name_raw"])
         if not raw_name:
             continue
             
+        # Strip generic honorifics before passing to the canonical normalizer
         clean_name = re.sub(r'^(Ông|Bà)\s+', '', raw_name, flags=re.IGNORECASE)
         
-        # Xử lý Năm sinh -> Tuổi
+        # Transform Year of Birth (YOB) into Age metric
         yob_str = clean_placeholder(r["yob_raw"])
         age = None
         if yob_str and yob_str.isdigit():
             yob_val = int(yob_str)
+            # Basic sanity check for valid human ages
             if 1940 < yob_val < curr_year:
                 age = curr_year - yob_val
         
-        # Xử lý Số cổ phiếu (loại bỏ dấu phẩy và chuyển về số)
+        # Strip thousands separators (commas) to safely cast shares to numeric
         shares_str = clean_placeholder(r.get("shares_raw", "0"))
         shares_val = 0
         if shares_str:
@@ -184,7 +214,7 @@ def main():
         html = fetch_vietstock_html(ticker)
         
         if html:
-            # Lưu snapshot snapshot HTML để audit
+            # Save raw HTML snapshot for data provenance and debugging audit trails
             ts_str = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             raw_html_path = raw_dir / f"{ticker}_{ts_str}.html"
             raw_html_path.write_text(html, encoding="utf-8")
@@ -199,14 +229,16 @@ def main():
         else:
             tickers_failed.append(ticker)
             
-        time.sleep(1.5) 
+        time.sleep(1.5) # Mandatory rate-limiting compliance
 
     if all_dfs:
         combined = pd.concat(all_dfs, ignore_index=True)
     else:
         combined = pd.DataFrame()
 
-    # Fallback tạo DataFrame rỗng đầy đủ cột để bảo vệ Task 3
+    # Fallback: Create an empty DataFrame with the exact schema.
+    # This acts as a defensive programming mechanism to prevent Task 3 (Merge) 
+    # from crashing via KeyError if Vietstock completely blocks the scraper.
     if combined.empty:
         cols = [
             "ticker", "exchange", "report_date", "person_name", "person_name_canonical", 
@@ -215,7 +247,7 @@ def main():
         ]
         combined = pd.DataFrame(columns=cols)
 
-    # LƯU CHÍNH XÁC THEO LỆNH EVALUATION CỦA ĐỀ BÀI
+    # Output directly to the required evaluation path
     output_path = project_root / "data" / "raw" / "vietstock_board.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     combined.to_parquet(output_path, index=False)
@@ -226,5 +258,5 @@ def main():
         logger.warning(f"Failed to fetch or parse tickers: {', '.join(tickers_failed)}")
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     main()

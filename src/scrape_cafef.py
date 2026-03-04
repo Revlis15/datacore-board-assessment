@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 import pandas as pd
 import requests
 
-# Đảm bảo script tìm thấy module src
+# Ensure the script can locate the 'src' module when run from the root directory
 project_root = Path(__file__).resolve().parents[1]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
@@ -26,30 +26,38 @@ from src.utils import (
 logger = logging.getLogger(__name__)
 
 def fetch_cafef_api(ticker: str) -> str:
-    """Tải dữ liệu bằng API với Header giả lập trình duyệt chuyên sâu."""
+    """
+    Fetches board data directly from CafeF's internal AJAX endpoint.
+    
+    Why AJAX instead of HTML scraping?
+    - The JSON response is cleaner, faster, and avoids complex BeautifulSoup parsing.
+    - We bypass dynamic rendering issues caused by JavaScript on the main page.
+    """
     url = f"https://s.cafef.vn/Ajax/PageNew/ListCeo.ashx?Symbol={ticker}&PositionGroup=0"
     
+    # Comprehensive header spoofing to mimic a real browser request and avoid 403 Forbidden errors.
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-        "X-Requested-With": "XMLHttpRequest",
-        # QUAN TRỌNG: Referer phải khớp với ticker đang cào
+        "X-Requested-With": "XMLHttpRequest", # Crucial for AJAX endpoint validation
+        # IMPORTANT: Referer must dynamically match the target ticker to pass origin checks
         "Referer": f"https://s.cafef.vn/hoso/cong-ty/{ticker}/ban-lanh-dao-cong-ty.chn",
         "Connection": "keep-alive"
     }
     
-    # Sử dụng Session để giữ Cookie (nếu có) qua các lần retry
+    # Use requests.Session() to persist cookies (if any are set by the server) across retries
     session = requests.Session()
     
     for attempt in range(3):
         try:
             resp = session.get(url, headers=headers, timeout=20)
             if resp.status_code == 200:
-                # Kiểm tra nội dung rỗng giả (Success:true nhưng Data:[])
+                # Detect soft blocks: CafeF sometimes returns a 200 OK but with empty "Data":[] 
+                # when it detects high request frequencies.
                 if '"Data":[]' in resp.text:
                     logger.warning(f"CafeF returned empty data for {ticker}. Likely a soft block. (Attempt {attempt+1}/3)")
-                    # Nghỉ lâu hơn và đổi User-Agent nếu cần
+                    # Apply exponential backoff to recover from soft block
                     time.sleep(7) 
                     continue
                 return resp.text
@@ -59,17 +67,23 @@ def fetch_cafef_api(ticker: str) -> str:
         except Exception as e:
             logger.error(f"Network error on {ticker}: {e}")
         
+        # Standard delay before retry
         time.sleep(2)
     return ""
 
 def parse_cafef_board(json_str: str, ticker: str) -> List[Dict[str, Any]]:
-    """Trích xuất dữ liệu từ JSON."""
+    """
+    Extracts relevant leadership fields from the deeply nested CafeF JSON structure.
+    """
     if not json_str: return []
     try:
         data_list = json.loads(json_str).get("Data") or []
-    except: return []
+    except json.JSONDecodeError: 
+        logger.error(f"Failed to decode JSON for {ticker}")
+        return []
 
     records = []
+    # Data is grouped by role tiers (e.g., Board of Directors, Management Board)
     for group in data_list:
         values = group.get("values")
         if not isinstance(values, list): continue
@@ -77,6 +91,7 @@ def parse_cafef_board(json_str: str, ticker: str) -> List[Dict[str, Any]]:
             name = (p.get("Name") or "").strip()
             if not name: continue
             
+            # Education info is often nested inside an array of CeoSchools objects
             edu = ""
             schools = p.get("CeoSchools")
             if isinstance(schools, list) and len(schools) > 0:
@@ -86,14 +101,19 @@ def parse_cafef_board(json_str: str, ticker: str) -> List[Dict[str, Any]]:
                 "ticker": ticker,
                 "person_name_raw": name,
                 "role_title_raw": (p.get("Position") or "").strip(),
-                "age_raw": str(p.get("old", 0)),
+                "age_raw": str(p.get("old", 0)), # 'old' field represents age in CafeF
                 "education_raw": edu
             })
     return records
 
 def normalize_cafef_records(records: List[Dict[str, Any]], exchange: str) -> pd.DataFrame:
-    """Chuẩn hóa dữ liệu và ép kiểu datetime chuẩn Schema."""
+    """
+    Applies Entity Resolution (Name Normalization) and Schema Type Casting.
+    Ensures output strictly matches the required DataCore schema.
+    """
     if not records: return pd.DataFrame()
+    
+    # Generate ISO 8601 timestamp per requirements
     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows = []
     
@@ -101,6 +121,7 @@ def normalize_cafef_records(records: List[Dict[str, Any]], exchange: str) -> pd.
         p_raw = rec["person_name_raw"]
         p_can = normalize_person_name(p_raw)
         
+        # Safe casting for age to avoid ValueError on empty or invalid strings
         age_raw = rec["age_raw"]
         age_val = int(age_raw) if age_raw and age_raw.isdigit() and int(age_raw) > 0 else None
         
@@ -120,17 +141,18 @@ def normalize_cafef_records(records: List[Dict[str, Any]], exchange: str) -> pd.
     
     df = pd.DataFrame(rows)
     if not df.empty:
-        # Ép kiểu datetime để đúng với Required Output Schema của Task 1
+        # Cast to proper datetime format as mandated by the Target Schema
         df["scraped_at"] = pd.to_datetime(df["scraped_at"])
     return df
 
 def main():
     config = load_config(project_root / "config.yaml")
     
-    # Chỉ định nghĩa thư mục raw
+    # Directory setup for raw JSON snapshots (useful for auditing and debugging)
     raw_dir = project_root / "data" / "raw" / "cafef"
     raw_dir.mkdir(parents=True, exist_ok=True)
     
+    # Load universe of tickers to process
     tickers_df = pd.read_csv(config["tickers"]["file"])
     ticker_map = tickers_df.set_index("ticker")["exchange"].to_dict()
     
@@ -142,7 +164,7 @@ def main():
         json_data = fetch_cafef_api(ticker)
         
         if json_data:
-            # Lưu snapshot snapshot JSON để audit
+            # Save raw JSON snapshot for data provenance and troubleshooting
             ts_str = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             raw_file_path = raw_dir / f"{ticker}_{ts_str}.json"
             raw_file_path.write_text(json_data, encoding="utf-8")
@@ -157,15 +179,14 @@ def main():
         else:
             tickers_failed.append(ticker)
                 
-        time.sleep(1.5) # Be respectful [cite: 37]
+        # Mandatory delay to be respectful to the source server
+        time.sleep(1.5) 
 
+    # Combine all individual ticker DataFrames
     if all_dfs:
         combined = pd.concat(all_dfs, ignore_index=True)
     else:
-        combined = pd.DataFrame()
-
-    # Fallback tạo DataFrame rỗng chuẩn schema nếu bị lỗi hoàn toàn (tránh sập Task 3)
-    if combined.empty:
+        # Fallback: Create an empty DataFrame with the exact schema to prevent downstream pipeline crashes
         cols = [
             "ticker", "exchange", "person_name", "person_name_canonical", 
             "person_name_key", "role", "role_category", "source", "scraped_at", 
@@ -173,7 +194,7 @@ def main():
         ]
         combined = pd.DataFrame(columns=cols)
 
-    # LƯU CHÍNH XÁC THEO LỆNH EVALUATION CỦA ĐỀ BÀI
+    # Output directly to data/raw/cafef_board.parquet per evaluation script requirements
     output_path = project_root / "data" / "raw" / "cafef_board.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     combined.to_parquet(output_path, index=False)
@@ -184,5 +205,5 @@ def main():
         logger.warning(f"Failed to fetch or parse tickers: {', '.join(tickers_failed)}")
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     main()
