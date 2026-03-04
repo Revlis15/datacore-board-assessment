@@ -301,9 +301,7 @@ data/final/board_golden.parquet
 
 Schema documentation:
 
-```
 - [Data Dictionary](docs/data_dictionary.md) – schema and description of the final dataset
-```
 
 Example fields:
 
@@ -323,9 +321,7 @@ Example fields:
 
 Detailed analysis is provided in:
 
-```
 - [Data Quality Report](docs/data_quality_report.md) – merge statistics and data quality analysis
-```
 
 The report includes:
 
