@@ -4,9 +4,17 @@ paths:
 
 tickers:
   file: data/tickers.csv
+  max_tickers: 3
 
 scraping:
-  request_delay_seconds: 5
-  timeout_seconds: 20
-  max_retries: 3
-  cafef_url_template: "https://cafef.vn/du-lieu/{exchange}/{ticker}-ban-lanh-dao-so-huu.chn"
+  cafef:
+    request_delay_seconds: 1.5
+    retry_delay_seconds: 5
+    timeout_seconds: 20
+    max_retries: 3
+
+  vietstock:
+    request_delay_seconds: 2
+    retry_delay_seconds: 5
+    timeout_seconds: 30
+    max_retries: 5

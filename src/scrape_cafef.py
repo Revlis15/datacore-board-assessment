@@ -25,7 +25,7 @@ from src.utils import (
 
 logger = logging.getLogger(__name__)
 
-def fetch_cafef_api(ticker: str) -> str:
+def fetch_cafef_api(ticker: str, timeout: int, max_retries: int, retry_delay: float) -> str:
     """
     Fetches board data directly from CafeF's internal AJAX endpoint.
     
@@ -49,16 +49,16 @@ def fetch_cafef_api(ticker: str) -> str:
     # Use requests.Session() to persist cookies (if any are set by the server) across retries
     session = requests.Session()
     
-    for attempt in range(3):
+    for attempt in range(max_retries):
         try:
-            resp = session.get(url, headers=headers, timeout=20)
+            resp = session.get(url, headers=headers, timeout=timeout)
             if resp.status_code == 200:
                 # Detect soft blocks: CafeF sometimes returns a 200 OK but with empty "Data":[] 
                 # when it detects high request frequencies.
                 if '"Data":[]' in resp.text:
-                    logger.warning(f"CafeF returned empty data for {ticker}. Likely a soft block. (Attempt {attempt+1}/3)")
+                    logger.warning(f"CafeF returned empty data for {ticker}. Likely a soft block. (Attempt {attempt+1}/{max_retries})")
                     # Apply exponential backoff to recover from soft block
-                    time.sleep(7) 
+                    time.sleep(retry_delay) 
                     continue
                 return resp.text
             elif resp.status_code == 403:
@@ -68,7 +68,7 @@ def fetch_cafef_api(ticker: str) -> str:
             logger.error(f"Network error on {ticker}: {e}")
         
         # Standard delay before retry
-        time.sleep(2)
+        time.sleep(retry_delay)
     return ""
 
 def parse_cafef_board(json_str: str, ticker: str) -> List[Dict[str, Any]]:
@@ -147,6 +147,13 @@ def normalize_cafef_records(records: List[Dict[str, Any]], exchange: str) -> pd.
 
 def main():
     config = load_config(project_root / "config.yaml")
+
+    scraping_cfg = config["scraping"]["cafef"]
+
+    request_delay = scraping_cfg["request_delay_seconds"]
+    retry_delay = scraping_cfg["retry_delay_seconds"]
+    timeout = scraping_cfg["timeout_seconds"]
+    max_retries = scraping_cfg["max_retries"]
     
     # Directory setup for raw JSON snapshots (useful for auditing and debugging)
     raw_dir = project_root / "data" / "raw" / "cafef"
@@ -161,7 +168,11 @@ def main():
     
     for ticker in load_tickers(config):
         logger.info(f"CafeF scraping ticker={ticker}")
-        json_data = fetch_cafef_api(ticker)
+        json_data = fetch_cafef_api(
+                                    ticker=ticker,
+                                    timeout=timeout,
+                                    max_retries=max_retries,
+                                    retry_delay=retry_delay)   
         
         if json_data:
             # Save raw JSON snapshot for data provenance and troubleshooting
@@ -180,7 +191,7 @@ def main():
             tickers_failed.append(ticker)
                 
         # Mandatory delay to be respectful to the source server
-        time.sleep(1.5) 
+        time.sleep(request_delay) 
 
     # Combine all individual ticker DataFrames
     if all_dfs:

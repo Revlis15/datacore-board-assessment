@@ -25,7 +25,7 @@ from src.utils import (
 
 logger = logging.getLogger(__name__)
 
-def fetch_vietstock_html(ticker: str) -> str:
+def fetch_vietstock_html(ticker: str, timeout: int, max_retries: int, retry_delay: float) -> str:
     """
     Fetches raw HTML from Vietstock using session management and header spoofing.
     
@@ -44,21 +44,21 @@ def fetch_vietstock_html(ticker: str) -> str:
     }
     
     session = requests.Session()
-    for attempt in range(5):
+    for attempt in range(max_retries):
         try:
-            resp = session.get(url, headers=headers, timeout=30)
+            resp = session.get(url, headers=headers, timeout=timeout)
             if resp.status_code == 200:
                 # Soft Block Detection: Vietstock might return a 200 OK status 
                 # but with an empty or drastically stripped HTML body if rate limits are hit.
                 if len(resp.text) < 1000:
                     logger.warning(f"Vietstock returned suspiciously short content for {ticker}. Possible soft block.")
-                    time.sleep(5) # Extended backoff
+                    time.sleep(retry_delay) # Extended backoff
                     continue
                 return resp.text
         except Exception as e:
             logger.error(f"Error fetching {ticker}: {e}")
             
-        time.sleep(3) # Standard retry delay
+        time.sleep(retry_delay) # Standard retry delay
     return ""
 
 def parse_board_html(html_text: str, ticker: str) -> List[Dict[str, Any]]:
@@ -199,6 +199,13 @@ def normalize_records(records: List[Dict[str, Any]], exchange: str) -> pd.DataFr
 
 def main():
     config = load_config(project_root / "config.yaml")
+
+    scraping_cfg = config["scraping"]["vietstock"]
+
+    request_delay = scraping_cfg["request_delay_seconds"]
+    retry_delay = scraping_cfg["retry_delay_seconds"]
+    timeout = scraping_cfg["timeout_seconds"]
+    max_retries = scraping_cfg["max_retries"]
     
     raw_dir = project_root / "data" / "raw" / "vietstock"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -211,7 +218,11 @@ def main():
 
     for ticker in load_tickers(config):
         logger.info(f"Vietstock scraping ticker={ticker}")
-        html = fetch_vietstock_html(ticker)
+        html = fetch_vietstock_html(
+                                    ticker=ticker,
+                                    timeout=timeout,
+                                    max_retries=max_retries,
+                                    retry_delay=retry_delay)
         
         if html:
             # Save raw HTML snapshot for data provenance and debugging audit trails
@@ -229,7 +240,7 @@ def main():
         else:
             tickers_failed.append(ticker)
             
-        time.sleep(1.5) # Mandatory rate-limiting compliance
+        time.sleep(request_delay) # Mandatory rate-limiting compliance
 
     if all_dfs:
         combined = pd.concat(all_dfs, ignore_index=True)
