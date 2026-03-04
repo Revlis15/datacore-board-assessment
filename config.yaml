@@ -1,0 +1,12 @@
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+
+tickers:
+  file: data/tickers.csv
+
+scraping:
+  request_delay_seconds: 5
+  timeout_seconds: 20
+  max_retries: 3
+  cafef_url_template: "https://cafef.vn/du-lieu/{exchange}/{ticker}-ban-lanh-dao-so-huu.chn"

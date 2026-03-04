@@ -1,0 +1,29 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+test/
+.venv/
+venv/
+env/
+.vscode/
+
+# IDE
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Raw scraped snapshots
+data/raw/cafef/*.json
+data/raw/vietstock/*.html
+
+# Generated datasets
+data/raw/cafef_board.parquet
+data/raw/vietstock_board.parquet
+data/final/board_golden.parquet
