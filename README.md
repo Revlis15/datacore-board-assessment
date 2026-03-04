@@ -27,32 +27,37 @@ The final output is a Parquet dataset suitable for downstream research or analyt
 
 # Repository Structure
 
+```
 datacore-board-assessment/
 ├── README.md
 ├── requirements.txt
 ├── config.yaml
 │
 ├── src/
-│ ├── scrape_cafef.py
-│ ├── scrape_vietstock.py
-│ ├── merge.py
-│ └── utils.py
+│   ├── scrape_cafef.py
+│   ├── scrape_vietstock.py
+│   ├── merge.py
+│   └── utils.py
 │
 ├── tools/
-│ └── generate_tickers.py
+│   └── generate_tickers.py
 │
 ├── data/
-│ ├── raw/
-│ ├── processed/
-│ └── final/
+│   ├── raw/
+│   ├── processed/
+│   └── final/
 │
 ├── docs/
-│ ├── data_dictionary.md
-│ └── data_quality_report.md
+│   ├── data_dictionary.md
+│   └── data_quality_report.md
 │
-└── tests/
-├── test_utils.py
-└── test_merger.py
+├── tests/
+│   ├── test_utils.py
+│   └── test_merger.py
+│
+└── notebooks/
+    └── eda_board_data.ipynb
+```
 
 # Setup Instructions
 
@@ -297,7 +302,7 @@ data/final/board_golden.parquet
 Schema documentation:
 
 ```
-docs/data_dictionary.md
+- [Data Dictionary](docs/data_dictionary.md) – schema and description of the final dataset
 ```
 
 Example fields:
@@ -319,7 +324,7 @@ Example fields:
 Detailed analysis is provided in:
 
 ```
-docs/data_quality_report.md
+- [Data Quality Report](docs/data_quality_report.md) – merge statistics and data quality analysis
 ```
 
 The report includes:
